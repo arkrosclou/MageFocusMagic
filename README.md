@@ -6,6 +6,8 @@
 
 For mages: who trades **Focus Magic** with whom, so nobody has to sort it out in raid chat.
 
+<sub>An addon for World of Warcraft 3.3.5a (Wrath of the Lich King) — Warmane, Icecrown, Lordaeron and other 3.3.5 realms.</sub>
+
 </div>
 
 <img src="docs/panel.png" width="560" alt="The panel: two pairs and a ring of three">
