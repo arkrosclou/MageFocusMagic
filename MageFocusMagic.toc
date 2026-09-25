@@ -1,0 +1,9 @@
+## Interface: 30300
+## Title: |cff69ccf0Mage|rFocusMagic
+## Notes: Who trades Focus Magic with whom: the same plan for every mage in the group.
+## Author: arkrosclou (Daliaty @ Warmane Lordaeron)
+## Version: 1.0
+## SavedVariables: MageFocusMagicDB
+
+MageFocusMagic.lua
+Config.lua
