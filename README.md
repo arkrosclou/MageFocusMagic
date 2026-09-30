@@ -37,8 +37,9 @@ not as wrong, and draws no border. Your own block is a shade lighter than the re
 
 ## Using it
 
-- **Click a name** to whisper that mage the order. The polite ask goes out at most once every 10 minutes
-  per player, the order itself at most once every 10 seconds.
+- **Click a name** to whisper that mage two lines: what is being asked of them, and their part of the
+  order. They always go together, so nobody gets a bare list of names. The cooldown is 10 seconds and it
+  is counted for each mage on their own - whisper three of them in a row and all three get the whole thing.
 - **Click an icon** to cast Focus Magic on that mage - no targeting needed. Casting is protected by the
   game, so an icon can only be re-aimed out of combat: it keeps the aim it had when the fight started
   until the fight ends.

@@ -37,10 +37,12 @@ local PAD     = 8
 local function blockH() return MFM.db.iconSize end
 local function nameW() return MFM.db.iconSize * 4 end
 
--- one whisper asking for the trade per player per 10 minutes, and the order
--- itself at most once every 10 seconds, however many names get clicked
-local ASK_COOLDOWN = 600
-local PLAN_COOLDOWN = 10
+-- One whisper per mage per 10 seconds, counted for each of them on their own,
+-- so three mages in a row all get the whole thing. The raid announce has its
+-- own cooldown: whispering somebody does not hold the announce back, and the
+-- other way round.
+local WHISPER_COOLDOWN = 10
+local ANNOUNCE_COOLDOWN = 10
 
 MFM.defaults = {
 	point = { "CENTER", "CENTER", 0, 0 }, -- the button
@@ -66,8 +68,7 @@ MFM.mages = {}   -- sorted list of { name, unit, buffed, mine }
 MFM.groups = {}  -- list of { kind = "pair"|"chain", [1..n] = name }
 MFM.byName = {}  -- name -> its entry in mages, refilled per draw
 MFM.giver = {}   -- name -> the mage the plan has casting on them
-MFM.lastAsk = {}     -- name -> when we last asked them
-MFM.lastPlan = 0     -- the whispered order
+MFM.lastWhisper = {} -- name -> when we last whispered them
 MFM.lastAnnounce = 0 -- the announce, on its own cooldown
 
 local function print_(msg)
@@ -224,25 +225,23 @@ end
 -- ---------------------------------------------------------------------------
 -- chat
 -- ---------------------------------------------------------------------------
--- Two whispers: the ask, which is the same words every time and would be spam
--- if repeated, and the order itself. They have their own cooldowns, so a
--- second click still resends the order but does not nag them again.
+-- Two whispers that only make sense together: what is being asked of them,
+-- and the order itself. They always go out as a pair, so nobody is left with
+-- a bare list of names and no idea who sent it or why.
 function MFM:Whisper(name)
 	if name == UnitName("player") or self.sample then return end
 	local g = groupOf(self.groups, name)
 	if not g then return end
 
 	local t = GetTime()
-	if t - (self.lastAsk[name] or -ASK_COOLDOWN) >= ASK_COOLDOWN then
-		self.lastAsk[name] = t
-		SendChatMessage(TAG .. ": please use this Focus Magic order.", "WHISPER", nil, name)
-	end
-	if t - self.lastPlan < PLAN_COOLDOWN then
-		print_(string.format("whisper is on cooldown, %ds left",
-			math.ceil(PLAN_COOLDOWN - (t - self.lastPlan))))
+	local last = self.lastWhisper[name]
+	if last and t - last < WHISPER_COOLDOWN then
+		print_(string.format("%s was whispered already, %ds left",
+			name, math.ceil(WHISPER_COOLDOWN - (t - last))))
 		return
 	end
-	self.lastPlan = t
+	self.lastWhisper[name] = t
+	SendChatMessage(TAG .. ": please use this Focus Magic order.", "WHISPER", nil, name)
 	SendChatMessage(ORDER .. groupText(g), "WHISPER", nil, name)
 end
 
@@ -266,9 +265,9 @@ function MFM:Announce()
 		return
 	end
 	local t = GetTime()
-	if t - self.lastAnnounce < PLAN_COOLDOWN then
+	if t - self.lastAnnounce < ANNOUNCE_COOLDOWN then
 		print_(string.format("announce is on cooldown, %ds left",
-			math.ceil(PLAN_COOLDOWN - (t - self.lastAnnounce))))
+			math.ceil(ANNOUNCE_COOLDOWN - (t - self.lastAnnounce))))
 		return
 	end
 	self.lastAnnounce = t
