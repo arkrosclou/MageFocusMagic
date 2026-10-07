@@ -66,8 +66,10 @@ MFM.ANCHORS = {
 
 MFM.mages = {}   -- sorted list of { name, unit, buffed, mine }
 MFM.groups = {}  -- list of { kind = "pair"|"chain", [1..n] = name }
-MFM.byName = {}  -- name -> its entry in mages, refilled per draw
+MFM.byName = {}  -- name -> its entry in mages, built with the plan
 MFM.giver = {}   -- name -> the mage the plan has casting on them
+MFM.sampleByName = {} -- the same two for the stand-ins, built where they are drawn
+MFM.sampleGiver = {}
 MFM.lastWhisper = {} -- name -> when we last whispered them
 MFM.lastAnnounce = 0 -- the announce, on its own cooldown
 
@@ -167,27 +169,80 @@ end
 -- Who is in the group only changes when the roster does, and the roster says
 -- so with an event. Between those, a refresh is just the buff read below: one
 -- UnitBuff per mage, a handful of calls even in a full raid.
----With mineOnly, only your own target is read: nothing else is on screen.
-function MFM:Rebuild(mineOnly)
+---Every mage is read, not only your own: the button speaks for all of them.
+function MFM:Rebuild()
 	if self.rosterDirty then
 		self.rosterDirty = false
 		collectMages(self.mages)
 		buildGroups(self.mages, self.groups)
+		self:MapPlan()
 	end
-	local only = mineOnly and self:MyTarget() or nil
 	for _, m in ipairs(self.mages) do
-		if not only or m.name == only then
-			local name, _, _, _, _, _, _, caster = UnitBuff(m.unit, FM_NAME)
-			m.buffed = name ~= nil
-			-- the border is about the one Focus Magic that is yours to keep up,
-			-- so whose it is matters, not just that there is one
-			m.mine = caster == "player"
-			-- The game only names the caster while it can see them, so this is
-			-- nil for a Focus Magic cast by somebody out of range. Unknown is
-			-- not the same as wrong, and is never drawn as a mistake.
-			m.caster = caster and UnitName(caster) or nil
+		local name, _, _, _, _, _, _, caster = UnitBuff(m.unit, FM_NAME)
+		m.buffed = name ~= nil
+		-- the border is about the one Focus Magic that is yours to keep up,
+		-- so whose it is matters, not just that there is one
+		m.mine = caster == "player"
+		-- The game only names the caster while it can see them, so this is
+		-- nil for a Focus Magic cast by somebody out of range. Unknown is
+		-- not the same as wrong, and is never drawn as a mistake.
+		m.caster = caster and UnitName(caster) or nil
+	end
+end
+
+-- What a name stands for, and who the plan has casting on whom. Both change
+-- only with the roster, so they are built there instead of once per draw.
+function MFM:MapPlan()
+	local byName, giver = self.byName, self.giver
+	wipe(byName)
+	wipe(giver)
+	for _, m in ipairs(self.mages) do byName[m.name] = m end
+	for _, g in ipairs(self.groups) do
+		for i, name in ipairs(g) do
+			giver[g[i % #g + 1]] = name
 		end
 	end
+end
+
+---Focus Magic reaches 30 yards; a mage the client cannot even see is too far.
+function MFM:InRange(unit)
+	if not unit then return true end
+	-- there is nothing to fall back on but sight if the client has no such call
+	if not IsSpellInRange then return UnitIsVisible(unit) and true or false end
+	local r = IsSpellInRange(FM_NAME, unit)
+	if r == 1 then return true end
+	if r == 0 then return false end
+	-- nil: the client will not judge a unit it cannot see
+	return UnitIsVisible(unit) and true or false
+end
+
+-- A mage is off the plan with no Focus Magic at all, or with one from a mage
+-- the plan did not name. A caster the client cannot see is unknown, not wrong,
+-- the same way the panel's blue border treats it.
+function MFM:OffPlan(m)
+	if not m.buffed then return true end
+	local giver = self.giver[m.name]
+	return (m.caster and giver and m.caster ~= giver) or false
+end
+
+---Your own Focus Magic first, whether you can reach it, then everyone else's.
+function MFM:Status()
+	-- one mage in the group is no plan, and nothing anybody does can be off it
+	if #self.groups == 0 then return false, true, false end
+	local target = self:MyTarget()
+	local mine = target and self.byName[target]
+	local owed = (mine and not mine.mine) or false
+	local reachable = (not owed) or self:InRange(mine.unit)
+
+	local offPlan = false
+	for _, m in ipairs(self.mages) do
+		-- your own target is the yellow border's business, not the white one's
+		if m.name ~= target and self:OffPlan(m) then
+			offPlan = true
+			break
+		end
+	end
+	return owed, reachable, offPlan
 end
 
 -- Opened unlocked with nobody to show, the panel fills itself with a raid of
@@ -285,6 +340,10 @@ end
 function MFM:GetBlock(i)
 	local b = self.blocks[i]
 	if b then return b end
+	-- A block carries a secure button, and the game lets nobody build, size or
+	-- place one of those in combat. The pool is grown between fights instead
+	-- (see Prewarm), so a panel opened mid-fight finds its blocks ready.
+	if InCombatLockdown() then return nil end
 
 	b = CreateFrame("Frame", nil, self.panel)
 	b:SetBackdrop({ bgFile = FLAT, edgeFile = FLAT, edgeSize = 1 })
@@ -303,6 +362,7 @@ function MFM:GetBlock(i)
 		if not s.mage then return end
 		GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
 		GameTooltip:SetText("Cast " .. FM_NAME .. " on " .. s.mage)
+		if s.far then GameTooltip:AddLine("Out of range", 1, 0.3, 0.3) end
 		GameTooltip:Show()
 	end)
 	icon:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -349,6 +409,9 @@ end
 function MFM:SizeBlock(b)
 	local h = blockH()
 	if b.sized == h then return end
+	-- the icon inside is secure: a new row height has to wait for the fight to
+	-- end, and the next draw after it applies this on its own
+	if InCombatLockdown() then return end
 	b.sized = h
 	b:SetHeight(h)
 	b:SetWidth(h + nameW())
@@ -365,10 +428,15 @@ local BORDER_MINE  = { 1, 0.85, 0.1 }    -- your Focus Magic is missing on your 
 local BORDER_ANY   = { 1, 1, 1 }         -- somebody else's is missing
 local BORDER_WRONG = { 0.3, 0.6, 1 }     -- buffed, but not by the mage the plan named
 
+-- Red on the icon of a mage you owe and cannot reach, the way the game's own
+-- action bars say out of range.
+local TINT_FAR  = { 1, 0.35, 0.35 }
+local TINT_NONE = { 1, 1, 1 }
+
 -- A block is drawn several times a second while the panel is open, and almost
 -- nothing about it changes between draws. Every setter below is guarded by the
 -- value the block already shows.
-function MFM:SetBlock(b, m, isMe, owed, giver)
+function MFM:SetBlock(b, m, isMe, owed, giver, unreached)
 	self:SizeBlock(b)
 	-- a stand-in is a picture of a mage: no whisper, no tooltip, no cast
 	local real = (not isMe) and (not m.sample) and m.name or nil
@@ -410,6 +478,15 @@ function MFM:SetBlock(b, m, isMe, owed, giver)
 			b.border:Hide()
 		end
 	end
+
+	-- Yellow says you owe it, red says you cannot reach them from here. The
+	-- tooltip spells it out, for when a red icon is not enough.
+	local tint = unreached and TINT_FAR or TINT_NONE
+	if b.cTint ~= tint then
+		b.cTint = tint
+		b.icon.tex:SetVertexColor(tint[1], tint[2], tint[3])
+	end
+	b.icon.far = unreached
 
 	-- Casting is protected: the macro may only be written out of combat, so in
 	-- a fight a block keeps the aim it had when the fight started. Aiming at
@@ -498,18 +575,22 @@ function MFM:CreateDisplay()
 	icon:SetAllPoints()
 	icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 	icon:SetTexture(FM_ICON)
+	b.tex = icon
 
-	-- the same yellow the panel puts on your own target, so the button says
-	-- "you owe a Focus Magic" without the panel being open
+	-- the same borders the panel puts on a block, so the state of the plan is
+	-- readable with the panel closed: yellow for the one you owe, white for
+	-- anybody else's
 	b.border = CreateFrame("Frame", nil, b)
 	b.border:SetPoint("TOPLEFT", -2, 2)
 	b.border:SetPoint("BOTTOMRIGHT", 2, -2)
 	b.border:SetBackdrop({ edgeFile = FLAT, edgeSize = 2 })
-	b.border:SetBackdropBorderColor(BORDER_MINE[1], BORDER_MINE[2], BORDER_MINE[3], 1)
 	b.border:Hide()
 	b:SetScript("OnEnter", function(s)
 		GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
 		GameTooltip:SetText("MageFocusMagic")
+		if MFM.cFar then
+			GameTooltip:AddLine("Out of range of your " .. FM_NAME .. " target", 1, 0.3, 0.3)
+		end
 		GameTooltip:AddLine("Left click: the Focus Magic order", 1, 1, 1)
 		GameTooltip:AddLine("Right click: options", 1, 1, 1)
 		GameTooltip:AddLine(MFM.db.locked and "Locked in place"
@@ -534,7 +615,6 @@ function MFM:CreateDisplay()
 
 	panel.empty = panel:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	panel.empty:SetPoint("CENTER")
-	panel.empty:SetText("no other mage in the group")
 
 	-- the announce, in the same flat look as a player block
 	local btn = CreateFrame("Button", nil, panel)
@@ -573,7 +653,7 @@ function MFM:Tick()
 		self:UpdatePanel()
 	elseif GetNumRaidMembers() > 0 or GetNumPartyMembers() > 0 then
 		self.sample = false
-		self:Rebuild(true) -- closed: only the border on the button depends on this
+		self:Rebuild() -- closed: only the button's borders depend on this
 	elseif #self.mages > 0 then
 		-- left the group: drop what is left of the plan, once
 		self.sample = false
@@ -581,20 +661,48 @@ function MFM:Tick()
 		self:Rebuild()
 	end
 
-	-- your own target, missing your Focus Magic: the same thing the yellow
-	-- border in the panel says. Stand-ins never light the button.
-	local owed = false
+	self:Prewarm()
+	self:UpdateButton()
+end
+
+-- The pool is grown while there is no fight on, because a secure button can
+-- only be built then. What it has to cover is one block per mage, or the
+-- stand-ins when an unlocked panel will be showing those instead.
+function MFM:Prewarm()
+	if not self.blocks or InCombatLockdown() then return end
+	local n = #self.mages
+	if n == 0 and self.panel:IsShown() and not self.db.locked then n = #SAMPLE end
+	for i = #self.blocks + 1, n do self:GetBlock(i) end
+end
+
+-- The button carries both of the panel's borders, so the plan is readable with
+-- the panel closed: yellow when your own Focus Magic is not on the mage the
+-- plan gave you, white when anybody else is off it. Yellow wins, being the one
+-- you can do something about. On top of that the icon goes red while that mage
+-- is out of range, so a yellow border you cannot act on says so.
+-- Stand-ins never light any of it.
+function MFM:UpdateButton()
+	local owed, reachable, offPlan = false, true, false
 	if not self.sample then
-		local target = self:MyTarget()
-		if target then
-			for _, m in ipairs(self.mages) do
-				if m.name == target then owed = not m.mine end
-			end
+		owed, reachable, offPlan = self:Status()
+	end
+
+	local c = owed and BORDER_MINE or (offPlan and BORDER_ANY or nil)
+	if self.cBorder ~= c then
+		self.cBorder = c
+		if c then
+			self.button.border:SetBackdropBorderColor(c[1], c[2], c[3], 1)
+			self.button.border:Show()
+		else
+			self.button.border:Hide()
 		end
 	end
-	if self.cOwed ~= owed then
-		self.cOwed = owed
-		if owed then self.button.border:Show() else self.button.border:Hide() end
+
+	local far = owed and not reachable
+	if self.cFar ~= far then
+		self.cFar = far
+		local t = far and TINT_FAR or TINT_NONE
+		self.button.tex:SetVertexColor(t[1], t[2], t[3])
 	end
 end
 
@@ -640,6 +748,15 @@ end
 local SEP_PAIR  = "<>"
 local SEP_CHAIN = ">"
 
+-- the one line a panel with no rows in it shows, set where it is shown
+local function setEmpty(p, text)
+	if p.cEmpty ~= text then
+		p.cEmpty = text
+		p.empty:SetText(text)
+	end
+	p.empty:Show()
+end
+
 -- "> Name" for the end of a ring, built once per name it has ever shown
 local ringText = setmetatable({}, { __index = function(t, name)
 	local s = SEP_CHAIN .. " |cff777777" .. name .. "|r"
@@ -661,7 +778,7 @@ function MFM:UpdatePanel()
 			for _, b in ipairs(self.blocks) do b:Hide() end
 			for _, s in ipairs(self.seps) do s:Hide() end
 			p.announce:Hide()
-			p.empty:Show()
+			setEmpty(p, "no other mage in the group")
 			p.cW, p.cH = nil, nil -- the size below is not the one rows produce
 			p:SetWidth(200)
 			p:SetHeight(blockH() + PAD * 2)
@@ -674,15 +791,19 @@ function MFM:UpdatePanel()
 	end
 	p.empty:Hide()
 
-	-- two lookups the rows need, kept between draws instead of rebuilt: what a
-	-- name stands for, and who the plan has casting on whom
+	-- The plan's two lookups are built with the plan itself, in MapPlan. The
+	-- stand-ins get their own pair, so a panel full of them never writes
+	-- anything into the real ones.
 	local byName, giver = self.byName, self.giver
-	wipe(byName)
-	wipe(giver)
-	for _, m in ipairs(mages) do byName[m.name] = m end
-	for _, g in ipairs(groups) do
-		for i, name in ipairs(g) do
-			giver[g[i % #g + 1]] = name
+	if self.sample then
+		byName, giver = self.sampleByName, self.sampleGiver
+		wipe(byName)
+		wipe(giver)
+		for _, m in ipairs(mages) do byName[m.name] = m end
+		for _, g in ipairs(groups) do
+			for i, name in ipairs(g) do
+				giver[g[i % #g + 1]] = name
+			end
 		end
 	end
 
@@ -690,10 +811,16 @@ function MFM:UpdatePanel()
 	-- them. Another mage's Focus Magic on them is not yours and does not count.
 	local myTarget = self.sample and SAMPLE[2] or self:MyTarget()
 	local owed = (myTarget and not byName[myTarget].mine) and myTarget or nil
+	local unreached = owed and not self:InRange(byName[owed].unit) or false
 
 	local nBlocks, nSeps = 0, 0
 	local widest, y = 0, -PAD
 	for _, g in ipairs(groups) do
+		-- In combat the pool cannot grow, so a row that has no blocks left is
+		-- left out whole rather than drawn in half. Prewarm keeps that from
+		-- happening at all unless the raid gained a mage mid-fight, and the
+		-- draw right after the fight puts the row back.
+		if #self.blocks < nBlocks + #g and InCombatLockdown() then break end
 		local x = PAD
 		for mi, name in ipairs(g) do
 			if mi > 1 then
@@ -708,7 +835,8 @@ function MFM:UpdatePanel()
 			local b = self:GetBlock(nBlocks)
 			b:ClearAllPoints()
 			b:SetPoint("TOPLEFT", p, "TOPLEFT", x, y)
-			self:SetBlock(b, byName[name], name == me, name == owed, giver[name])
+			self:SetBlock(b, byName[name], name == me, name == owed, giver[name],
+				name == owed and unreached)
 			x = x + b:GetWidth()
 		end
 		-- a ring hands the buff back to the mage it started with
@@ -727,6 +855,14 @@ function MFM:UpdatePanel()
 
 	for i = nBlocks + 1, #self.blocks do self.blocks[i]:Hide() end
 	for i = nSeps + 1, #self.seps do self.seps[i]:Hide() end
+
+	-- Not one row fit: the pool was still empty when the fight started, which
+	-- only happens after logging in mid-fight. Say so instead of showing an
+	-- empty box of no particular width.
+	if nBlocks == 0 then
+		setEmpty(p, "the rows are built when the fight ends")
+		widest = 220
+	end
 
 	p.announce:ClearAllPoints()
 	p.announce:SetPoint("TOPLEFT", p, "TOPLEFT", PAD, y)
@@ -798,4 +934,7 @@ driver:SetScript("OnEvent", function(self, event, arg1)
 	self:RegisterEvent("RAID_ROSTER_UPDATE")
 	self:RegisterEvent("PARTY_MEMBERS_CHANGED")
 	self:RegisterEvent("PLAYER_ENTERING_WORLD")
+	-- out of combat the secure parts of a block can be touched again: the pool
+	-- grows, the icons take the row height, and the aims are rewritten
+	self:RegisterEvent("PLAYER_REGEN_ENABLED")
 end)

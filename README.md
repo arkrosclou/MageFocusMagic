@@ -35,6 +35,9 @@ One row per trade, one block per mage. The border around an icon is the whole st
 Blue needs the caster to be visible to your client: a Focus Magic from somebody far away reads as unknown,
 not as wrong, and draws no border. Your own block is a shade lighter than the rest.
 
+An icon turns **red** when the one you owe is on a mage out of range, so a yellow border you cannot act on
+says as much.
+
 ## Using it
 
 - **Click a name** to whisper that mage two lines: what is being asked of them, and their part of the
@@ -45,7 +48,9 @@ not as wrong, and draws no border. Your own block is a shade lighter than the re
   until the fight ends.
 - **Announce to raid** posts the whole plan in raid (or party) chat:
   `Focus Magic order: Aaa <> Bbb | Ccc > Ddd > Eee > Ccc`. It has its own 10 second cooldown.
-- The **button** carries the yellow border too, so a Focus Magic you owe is visible with the panel closed.
+- The **button** carries the same borders, so the state of the plan is readable with the panel closed:
+  yellow when your own Focus Magic is missing, white when another mage is off the plan. It turns red while
+  the mage you owe is out of range.
 - Opened unlocked with nobody to show, the panel fills itself with seven stand-in mages, so you can size
   it and place the button before the raid starts. The stand-ins do nothing at all.
 
